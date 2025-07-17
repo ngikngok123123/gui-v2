@@ -1,0 +1,494 @@
+# nama file: client.py
+import socket
+import threading
+import json
+import tkinter as tk
+from tkinter import simpledialog, scrolledtext, filedialog, messagebox, Listbox, Frame, Menu, PanedWindow, END, Toplevel, Label, Entry, Button
+from tkinter.ttk import Separator
+import os
+import uuid
+import base64
+from PIL import Image, ImageTk
+import io
+import sys
+
+# --- TEMA TAMPILAN MODERN ---
+COLORS = {
+    "background": "#1e1e1e", "foreground": "#d4d4d4", "accent_purple": "#c586c0",
+    "widget_bg": "#252526", "widget_fg": "#cccccc", "entry_bg": "#3c3c3c",
+    "button_bg": "#3e3e42", "button_active": "#5e5e62"
+}
+FONT_MAIN = ("Segoe UI", 10)
+FONT_BOLD = ("Segoe UI", 10, "bold")
+
+class ChatClient:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.username = None
+        self.socket = None
+        self.current_recipient = None
+        self.gui_initialized = False
+        self.outgoing_files = {}
+        self.incoming_files = {}
+        self.show_login_window()
+        self.root.mainloop()
+
+    def show_login_window(self):
+        self.login_win = Toplevel(self.root)
+        self.login_win.title("Login")
+        self.login_win.geometry("350x200")
+        self.login_win.resizable(False, False)
+        self.login_win.protocol("WM_DELETE_WINDOW", self.exit_app)
+        self.login_win.config(bg=COLORS["background"])
+
+        # === BLOK KODE UNTUK MENGUBAH IKON JENDELA LOGIN ===
+        try:
+            ikon_path = "ChatAja_64x64.png"
+            img = Image.open(ikon_path)
+            ikon_foto = ImageTk.PhotoImage(img)
+            self.login_win.iconphoto(False, ikon_foto)
+        except Exception as e:
+            print(f"Tidak dapat memuat ikon aplikasi: {e}")
+
+        Label(self.login_win, text="IP Server:", bg=COLORS["background"], fg=COLORS["foreground"], font=FONT_MAIN).pack(pady=(10, 0))
+        self.ip_entry = Entry(self.login_win, width=30, justify='center', bg=COLORS["entry_bg"], fg=COLORS["foreground"], insertbackground=COLORS["foreground"], relief=tk.FLAT)
+        self.ip_entry.pack(padx=10)
+        self.ip_entry.insert(0, '127.0.0.1')
+        Label(self.login_win, text="Username:", bg=COLORS["background"], fg=COLORS["foreground"], font=FONT_MAIN).pack(pady=(5, 0))
+        self.user_entry = Entry(self.login_win, width=30, justify='center', bg=COLORS["entry_bg"], fg=COLORS["foreground"], insertbackground=COLORS["foreground"], relief=tk.FLAT)
+        self.user_entry.pack(padx=10)
+        Label(self.login_win, text="Password:", bg=COLORS["background"], fg=COLORS["foreground"], font=FONT_MAIN).pack(pady=(5, 0))
+        self.pass_entry = Entry(self.login_win, show="*", width=30, justify='center', bg=COLORS["entry_bg"], fg=COLORS["foreground"], insertbackground=COLORS["foreground"], relief=tk.FLAT)
+        self.pass_entry.pack(padx=10)
+        self.pass_entry.bind("<Return>", self.attempt_login)
+        btn_frame = Frame(self.login_win, bg=COLORS["background"])
+        btn_frame.pack(pady=15)
+        Button(btn_frame, text="Login", command=self.attempt_login, width=10, bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT).pack(side='left', padx=10)
+        Button(btn_frame, text="Register", command=self.open_register_window, width=10, bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT).pack(side='left', padx=10)
+
+    def open_register_window(self):
+        self.register_win = Toplevel(self.root)
+        self.register_win.title("Register Akun Baru")
+        self.register_win.geometry("350x240")
+        self.register_win.resizable(False, False)
+        self.register_win.transient(self.login_win)
+        self.register_win.grab_set()
+        self.register_win.config(bg=COLORS["background"])
+        Label(self.register_win, text="Username Baru:", bg=COLORS["background"], fg=COLORS["foreground"], font=FONT_MAIN).pack(pady=(10,0))
+        self.reg_user_entry = Entry(self.register_win, width=30, justify='center', bg=COLORS["entry_bg"], fg=COLORS["foreground"], insertbackground=COLORS["foreground"], relief=tk.FLAT)
+        self.reg_user_entry.pack(padx=10)
+        Label(self.register_win, text="Password Baru (min. 8 karakter):", bg=COLORS["background"], fg=COLORS["foreground"], font=FONT_MAIN).pack(pady=(5,0))
+        self.reg_pass_entry = Entry(self.register_win, show="*", width=30, justify='center', bg=COLORS["entry_bg"], fg=COLORS["foreground"], insertbackground=COLORS["foreground"], relief=tk.FLAT)
+        self.reg_pass_entry.pack(padx=10)
+        Label(self.register_win, text="Konfirmasi Password:", bg=COLORS["background"], fg=COLORS["foreground"], font=FONT_MAIN).pack(pady=(5,0))
+        self.reg_confirm_pass_entry = Entry(self.register_win, show="*", width=30, justify='center', bg=COLORS["entry_bg"], fg=COLORS["foreground"], insertbackground=COLORS["foreground"], relief=tk.FLAT)
+        self.reg_confirm_pass_entry.pack(padx=10)
+        Button(self.register_win, text="Submit Registrasi", command=self.attempt_register, width=20, bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT).pack(pady=15)
+
+    def attempt_register(self):
+        username = self.reg_user_entry.get()
+        password = self.reg_pass_entry.get()
+        confirm_password = self.reg_confirm_pass_entry.get()
+        if not all([username, password, confirm_password]):
+            messagebox.showerror("Error", "Semua kolom harus diisi.", parent=self.register_win)
+            return
+        if password != confirm_password:
+            messagebox.showerror("Error", "Password dan konfirmasi tidak cocok.", parent=self.register_win)
+            return
+        if self.socket:
+            self.socket.close()
+            self.socket = None
+        if not self.connect_if_needed():
+            return
+        self.send_json({"type": "register", "username": username, "password": password})
+
+    def connect_if_needed(self):
+        if self.socket and self.socket.fileno() != -1:
+            return True
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.ip_entry.get(), 65432))
+            threading.Thread(target=self.receive_messages, daemon=True).start()
+            return True
+        except Exception as e:
+            messagebox.showerror("Koneksi Gagal", f"Tidak bisa terhubung ke server: {e}")
+            self.socket = None
+            return False
+
+    def attempt_login(self, event=None):
+        if self.socket:
+            self.socket.close()
+            self.socket = None
+        if not self.connect_if_needed():
+            return
+        self.send_json({"type": "login", "username": self.user_entry.get(), "password": self.pass_entry.get()})
+
+    def setup_main_window(self, initial_online_list=[]):
+        if hasattr(self, 'login_win'):
+            self.login_win.destroy()
+        if hasattr(self, 'register_win') and self.register_win.winfo_exists():
+            self.register_win.destroy()
+        self.root.deiconify()
+        self.root.title(f"Chat Aja - {self.username}")
+        self.root.geometry("850x650")
+        self.root.configure(bg=COLORS["background"])
+        self.root.protocol("WM_DELETE_WINDOW", self.exit_app)
+
+        # === BLOK KODE UNTUK MENGUBAH IKON JENDELA UTAMA ===
+        try:
+            ikon_path = "ChatAja_64x64.png" # <-- Ganti dengan nama file logo Anda
+            img = Image.open(ikon_path)
+            ikon_foto = ImageTk.PhotoImage(img)
+            self.root.iconphoto(False, ikon_foto)
+        except Exception as e:
+            print(f"Tidak dapat memuat ikon aplikasi untuk jendela utama: {e}")
+
+        menubar = Menu(self.root, bg=COLORS["widget_bg"], fg=COLORS["foreground"])
+        self.root.config(menu=menubar)
+        
+        account_menu = Menu(menubar, tearoff=0, bg=COLORS["widget_bg"], fg=COLORS["foreground"])
+        menubar.add_cascade(label="Akun", menu=account_menu)
+        account_menu.add_command(label="Logout", command=self.logout)
+        account_menu.add_separator()
+        account_menu.add_command(label="Keluar", command=self.exit_app)
+
+        friend_menu = Menu(menubar, tearoff=0, bg=COLORS["widget_bg"], fg=COLORS["foreground"])
+        menubar.add_cascade(label="Teman", menu=friend_menu)
+        friend_menu.add_command(label="Tambah Teman", command=self.add_friend)
+        friend_menu.add_command(label="Refresh Semua Daftar", command=self.refresh_all_lists)
+
+        group_menu = Menu(menubar, tearoff=0, bg=COLORS["widget_bg"], fg=COLORS["foreground"])
+        menubar.add_cascade(label="Grup", menu=group_menu)
+        group_menu.add_command(label="Buat Grup Baru", command=self.create_group)
+        group_menu.add_command(label="Tambah Anggota ke Grup", command=self.add_to_group)
+        
+        p_main = PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bg=COLORS["background"], bd=1)
+        p_main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        left_frame = Frame(p_main, bg=COLORS["widget_bg"])
+        p_main.add(left_frame, width=220)
+        right_frame = Frame(p_main, bg=COLORS["background"])
+        p_main.add(right_frame)
+
+        Label(left_frame, text="-- Online --", font=FONT_BOLD, bg=COLORS["widget_bg"], fg=COLORS["accent_purple"]).pack(fill=tk.X, padx=5, pady=(5,0))
+        self.online_list = Listbox(left_frame, height=8, bg=COLORS["widget_bg"], fg=COLORS["widget_fg"], selectbackground=COLORS["accent_purple"], relief=tk.FLAT, borderwidth=0, highlightthickness=0)
+        self.online_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
+        self.online_list.bind('<<ListboxSelect>>', self.select_recipient)
+        Separator(left_frame, orient='horizontal').pack(fill='x', pady=5, padx=5)
+        Label(left_frame, text="-- Teman --", font=FONT_BOLD, bg=COLORS["widget_bg"], fg=COLORS["accent_purple"]).pack(fill=tk.X, padx=5)
+        self.friends_list = Listbox(left_frame, height=8, bg=COLORS["widget_bg"], fg=COLORS["widget_fg"], selectbackground=COLORS["accent_purple"], relief=tk.FLAT, borderwidth=0, highlightthickness=0)
+        self.friends_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
+        self.friends_list.bind('<<ListboxSelect>>', self.select_recipient)
+        Separator(left_frame, orient='horizontal').pack(fill='x', pady=5, padx=5)
+        Label(left_frame, text="-- Grup Saya --", font=FONT_BOLD, bg=COLORS["widget_bg"], fg=COLORS["accent_purple"]).pack(fill=tk.X, padx=5)
+        self.groups_list = Listbox(left_frame, height=8, bg=COLORS["widget_bg"], fg=COLORS["widget_fg"], selectbackground=COLORS["accent_purple"], relief=tk.FLAT, borderwidth=0, highlightthickness=0)
+        self.groups_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=(2,5))
+        self.groups_list.bind('<<ListboxSelect>>', self.select_recipient)
+        
+        self.chat_area = scrolledtext.ScrolledText(right_frame, wrap=tk.WORD, state='disabled', font=FONT_MAIN, bg=COLORS["widget_bg"], fg=COLORS["widget_fg"], relief=tk.FLAT, borderwidth=0, insertbackground=COLORS["foreground"])
+        self.chat_area.pack(fill=tk.BOTH, expand=True, pady=(0,5))
+        self.recipient_label = Label(right_frame, text="Pilih kontak untuk memulai chat...", fg="grey", bg=COLORS["background"], font=FONT_MAIN)
+        self.recipient_label.pack(fill=tk.X, padx=5)
+        input_frame = Frame(right_frame, bg=COLORS["background"])
+        input_frame.pack(fill=tk.X, padx=5, pady=(5, 5))
+        self.msg_entry = Entry(input_frame, font=("Segoe UI", 11), bg=COLORS["entry_bg"], fg=COLORS["foreground"], relief=tk.FLAT, insertbackground=COLORS["foreground"])
+        self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+        self.msg_entry.bind("<Return>", self.send_message)
+        btn_frame = Frame(right_frame, bg=COLORS["background"])
+        btn_frame.pack(fill=tk.X, padx=5, pady=(0,5))
+        Button(btn_frame, text="Kirim Pesan", command=self.send_message, bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT).pack(side=tk.LEFT)
+        Button(btn_frame, text="Kirim File", command=self.send_file, bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT).pack(side=tk.LEFT, padx=5)
+        Button(btn_frame, text="Kirim Gambar", command=lambda: self.send_file(image_only=True), bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT).pack(side=tk.LEFT)
+        
+        self.gui_initialized = True
+        self.update_listbox(self.online_list, initial_online_list)
+        self.refresh_all_lists()
+
+    def receive_messages(self):
+        buffer = b""
+        while self.socket and self.socket.fileno() != -1:
+            try:
+                data = self.socket.recv(16384)
+                if not data: break
+                buffer += data
+                while True:
+                    try:
+                        message, index = json.JSONDecoder().raw_decode(buffer.decode('utf-8', errors='ignore'))
+                        self.root.after(0, self.process_message, message)
+                        buffer = buffer[index:].lstrip()
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        break 
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+        if self.gui_initialized and self.username:
+            self.display_message("[Koneksi Terputus]")
+
+    def process_message(self, message):
+        msg_type = message.get("type")
+
+        if msg_type == "login_response":
+            if message["success"]:
+                self.username = message["username"]
+                self.setup_main_window(message["online_users"])
+            else:
+                messagebox.showerror("Login Gagal", message["reason"])
+                self.on_closing(graceful=False)
+        elif msg_type == "register_response":
+            if hasattr(self, 'register_win') and self.register_win.winfo_exists():
+                self.register_win.destroy()
+            if message["success"]:
+                messagebox.showinfo("Sukses", message["reason"])
+            else:
+                messagebox.showerror("Gagal", message["reason"])
+            self.on_closing(graceful=False)
+        
+        if not self.gui_initialized: return
+
+        if msg_type == "online_users_list":
+            self.update_listbox(self.online_list, message["users"])
+        elif msg_type == "friends_list":
+            self.update_listbox(self.friends_list, message["friends"])
+        elif msg_type == "my_groups_list":
+            self.update_listbox(self.groups_list, message["groups"])
+        elif msg_type == "private_message":
+            if message['recipient'] == self.current_recipient or message['sender'] == self.current_recipient:
+                self.display_message(f"[{message['sender']}]: {message['content']}")
+        elif msg_type == "friend_request":
+            if messagebox.askyesno("Permintaan Pertemanan", f"{message['from']} ingin berteman. Terima?"):
+                self.send_json({"type": "accept_friend", "sender": self.username, "friend_username": message['from']})
+        elif msg_type == "notification":
+            self.display_message(f"[INFO] {message['content']}")
+        elif msg_type == "chat_history":
+            self.display_chat_history(message['history'], message['recipient'])
+        elif msg_type == "file_offer":
+            if message['recipient'] == self.username or (message['recipient'] == self.current_recipient and self.current_recipient.startswith("Grup:")):
+                self.display_file_offer(message)
+        elif msg_type == "upload_approved":
+            threading.Thread(target=self._file_uploader_thread, args=(message['file_id'],), daemon=True).start()
+        elif msg_type == "file_data":
+            self._file_receiver_thread(message)
+        elif msg_type == "file_end":
+            self._file_receiver_thread(message, is_last=True)
+
+    def update_listbox(self, listbox, items):
+        current_selection = None
+        if listbox.curselection():
+            current_selection = listbox.get(listbox.curselection())
+        listbox.delete(0, END)
+        items_to_display = sorted([i for i in items if i != self.username])
+        for i, item in enumerate(items_to_display):
+            listbox.insert(END, item)
+        if current_selection in items_to_display:
+            listbox.selection_set(items_to_display.index(current_selection))
+
+    def select_recipient(self, event):
+        widget = event.widget
+        if not widget.curselection(): return
+        if widget != self.online_list: self.online_list.selection_clear(0, END)
+        if widget != self.friends_list: self.friends_list.selection_clear(0, END)
+        if widget != self.groups_list: self.groups_list.selection_clear(0, END)
+
+        self.current_recipient = widget.get(widget.curselection())
+        self.recipient_label.config(text=f"Chat dengan: {self.current_recipient}", fg=COLORS["accent_purple"])
+        self.send_json({"type": "get_chat_history", "sender": self.username, "recipient": self.current_recipient})
+
+    def display_chat_history(self, history, recipient):
+        if self.current_recipient != recipient: return
+        self.chat_area.config(state='normal')
+        self.chat_area.delete('1.0', END)
+        for msg in history:
+            msg_type = msg.get('message_type')
+            content = msg.get('content')
+            sender = msg.get('sender_username', 'unknown')
+            timestamp = msg.get('timestamp', '')
+            if msg_type == 'text':
+                self.chat_area.insert(END, f"[{sender} - {timestamp}]: {content}\n")
+            elif msg_type == 'file_offer':
+                try:
+                    file_data = json.loads(content)
+                    file_data['sender'] = sender
+                    self.display_file_offer(file_data, is_history=True, timestamp=timestamp)
+                except json.JSONDecodeError:
+                    self.chat_area.insert(END, f"[{sender} - {timestamp}]: [Riwayat file rusak]\n")
+        self.chat_area.config(state='disabled')
+        self.chat_area.yview(END)
+
+    def send_message(self, event=None):
+        if not self.current_recipient:
+            messagebox.showwarning("Peringatan", "Pilih kontak untuk memulai chat.")
+            return
+        content = self.msg_entry.get()
+        if content:
+            self.send_json({"type": "private_message", "sender": self.username, "recipient": self.current_recipient, "content": content})
+            self.display_message(f"[Anda -> {self.current_recipient}]: {content}")
+            self.msg_entry.delete(0, END)
+
+    def add_friend(self):
+        friend = simpledialog.askstring("Tambah Teman", "Masukkan username:")
+        if friend: self.send_json({"type":"add_friend", "sender":self.username, "friend_username":friend})
+
+    def refresh_all_lists(self):
+        self.send_json({"type": "get_friends_list", "sender": self.username})
+        self.send_json({"type": "get_my_groups", "sender": self.username})
+
+    def create_group(self):
+        group_name = simpledialog.askstring("Buat Grup", "Masukkan Nama Grup Baru:")
+        if group_name: self.send_json({"type": "create_group", "sender": self.username, "group_name": group_name})
+
+    def add_to_group(self):
+        group_name = simpledialog.askstring("Tambah Anggota", "Masukkan Nama Grup (tanpa 'Grup:'):")
+        if not group_name: return
+        user_to_add = simpledialog.askstring("Tambah Anggota", f"Masukkan username untuk ditambahkan ke grup '{group_name}':")
+        if user_to_add: self.send_json({"type": "add_to_group", "sender": self.username, "group_name": group_name, "user_to_add": user_to_add})
+
+    def send_file(self, image_only=False):
+        if not self.current_recipient:
+            messagebox.showwarning("Peringatan", "Pilih penerima dulu.")
+            return
+        filetypes = [('Image Files', '*.jpg *.jpeg *.png *.gif')] if image_only else [('All Files', '*.*')]
+        filepath = filedialog.askopenfilename(filetypes=filetypes)
+        if not filepath: return
+        
+        filesize = os.path.getsize(filepath)
+        if filesize > 50 * 1024 * 1024: # 50MB
+             messagebox.showerror("Gagal", f"Ukuran file {filesize/(1024*1024):.2f}MB melebihi batas 50MB.")
+             return
+
+        file_id = str(uuid.uuid4())
+        filename = os.path.basename(filepath)
+        self.outgoing_files[file_id] = filepath
+        
+        thumbnail_data = None
+        if image_only:
+            try:
+                img = Image.open(filepath)
+                img.thumbnail((128, 128))
+                buffered = io.BytesIO()
+                img.save(buffered, format="PNG")
+                thumbnail_data = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            except Exception as e:
+                print(f"Gagal membuat thumbnail: {e}")
+
+        init_upload_msg = {
+            "type": "initiate_upload", "sender": self.username, "recipient": self.current_recipient,
+            "file_id": file_id, "filename": filename, "filesize": filesize, "thumbnail": thumbnail_data
+        }
+        self.send_json(init_upload_msg)
+        self.display_message(f"[Mengunggah file '{filename}' ke server...]")
+
+    def _file_uploader_thread(self, file_id):
+        filepath = self.outgoing_files.get(file_id)
+        if not filepath:
+            self.display_message(f"[ERROR] File untuk transfer {file_id} tidak ditemukan.")
+            return
+        try:
+            with open(filepath, 'rb') as f:
+                while chunk := f.read(8192):
+                    self.send_json({"type": "file_data", "file_id": file_id, "chunk_b64": base64.b64encode(chunk).decode('utf-8')})
+            self.send_json({"type": "file_end", "file_id": file_id})
+            if file_id in self.outgoing_files: del self.outgoing_files[file_id]
+        except Exception as e:
+            self.display_message(f"[ERROR] Gagal mengunggah file: {e}")
+
+    def display_file_offer(self, offer_data, is_history=False, timestamp=""):
+        sender = offer_data['sender']
+        filename = offer_data['filename']
+        file_id = offer_data.get('file_id')
+        thumbnail_b64 = offer_data.get('thumbnail')
+
+        self.chat_area.config(state='normal')
+        prefix = f"[{sender} - {timestamp}]" if is_history else f"[{sender}]"
+        self.chat_area.insert(END, f"{prefix} mengirim: {filename}\n")
+        
+        offer_frame = Frame(self.chat_area, bd=1, relief="solid", bg=COLORS["entry_bg"])
+        
+        if thumbnail_b64:
+            try:
+                thumb_data = base64.b64decode(thumbnail_b64)
+                img = Image.open(io.BytesIO(thumb_data))
+                photo = ImageTk.PhotoImage(img)
+                preview_label = Label(offer_frame, image=photo, bg=COLORS["entry_bg"], cursor="hand2")
+                preview_label.image = photo 
+                preview_label.bind("<Button-1>", lambda e: self.accept_download(file_id, filename))
+                preview_label.pack(side="left", padx=5, pady=5)
+            except Exception as e:
+                print(f"Error displaying thumbnail: {e}")
+                Label(offer_frame, text="[Preview Gagal]", bg=COLORS["entry_bg"], fg=COLORS["foreground"]).pack(side="left", padx=5, pady=5)
+        
+        btn_text = "Download"
+        download_btn = Button(offer_frame, text=btn_text, command=lambda: self.accept_download(file_id, filename), bg=COLORS["button_bg"], fg=COLORS["foreground"], activebackground=COLORS["button_active"], relief=tk.FLAT)
+        download_btn.pack(side="left", padx=5, pady=5)
+        
+        self.chat_area.window_create(END, window=offer_frame)
+        self.chat_area.insert(END, "\n\n")
+        self.chat_area.config(state='disabled')
+        self.chat_area.yview(END)
+
+    def accept_download(self, file_id, filename):
+        save_path = filedialog.asksaveasfilename(initialfile=filename)
+        if not save_path: return
+        
+        self.send_json({
+            "type": "accept_file_offer", "file_id": file_id, 
+            "requester": self.username, "filename": filename 
+        })
+        self.display_message(f"[Memulai unduhan '{filename}']")
+        self.incoming_files[file_id] = open(save_path, 'wb')
+
+    def _file_receiver_thread(self, message, is_last=False):
+        file_id = message.get('file_id')
+        if file_id in self.incoming_files:
+            if not is_last:
+                chunk = base64.b64decode(message['chunk_b64'])
+                self.incoming_files[file_id].write(chunk)
+            else:
+                self.incoming_files[file_id].close()
+                del self.incoming_files[file_id]
+                self.display_message(f"[Unduhan '{message.get('filename', 'file')}' selesai.]")
+
+    def display_message(self, msg):
+        if self.gui_initialized:
+            self.chat_area.config(state='normal')
+            self.chat_area.insert(END, msg + "\n")
+            self.chat_area.config(state='disabled')
+            self.chat_area.yview(END)
+
+    def send_json(self, data):
+        if self.socket:
+            try:
+                self.socket.sendall(json.dumps(data).encode('utf-8'))
+            except (BrokenPipeError, OSError):
+                self.on_closing()
+
+    def on_closing(self, graceful=True):
+        if self.socket:
+            if self.username and graceful:
+                try:
+                    self.send_json({"type": "logout"})
+                except:
+                    pass
+            self.socket.close()
+            self.socket = None
+    
+    def logout(self):
+        self.on_closing(graceful=True)
+        self.root.destroy()
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.username = None
+        self.socket = None
+        self.current_recipient = None
+        self.gui_initialized = False
+        self.outgoing_files.clear()
+        self.incoming_files.clear()
+        self.show_login_window()
+
+    def exit_app(self):
+        self.on_closing(graceful=True)
+        if hasattr(self, 'root'):
+            self.root.quit()
+            self.root.destroy()
+        sys.exit()
+
+if __name__ == "__main__":
+    ChatClient()
